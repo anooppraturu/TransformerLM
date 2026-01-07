@@ -1,0 +1,44 @@
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# ---- Virtual environments ----
+.env/
+.venv/
+venv/
+ENV/
+
+# ---- Jupyter ----
+.ipynb_checkpoints/
+
+# ---- PyTorch / ML artifacts ----
+*.pt
+*.pth
+*.ckpt
+*.onnx
+
+# ---- Training outputs ----
+runs/
+wandb/
+tensorboard/
+logs/
+checkpoints/
+outputs/
+
+# ---- Datasets ----
+data/
+datasets/
+*.npz
+*.npy
+
+# ---- OS / editor junk ----
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# ---- Temporary files ----
+*.tmp
+*.log
