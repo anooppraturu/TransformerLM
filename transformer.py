@@ -69,3 +69,16 @@ class MultiHeadSelfAttention(nn.Module):
         out = self.WO(out)
 
         return out
+    
+    class MLP(nn.Module):
+        def __init__(self, embedding_dim, expansion=4):
+            super().__init__()
+            hidden_dim = expansion*embedding_dim
+            self.fc1 = nn.Linear(embedding_dim, hidden_dim)
+            self.fc2 = nn.Linear(hidden_dim, embedding_dim)
+            self.act = nn.GELU()
+
+        def forward(self, x):
+            x = self.act(self.fc1(x))
+            x = self.act(self.fc2(x))
+            return x
