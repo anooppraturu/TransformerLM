@@ -26,8 +26,8 @@ class MultiHeadSelfAttention(nn.Module):
         return torch.stack((-x2, x1), dim=-1).reshape_as(x)
 
     def apply_rope(self, q, k, cos, sin):
-        q_rot = (cos * q) + (self.rotate_half(q) * sin)
-        k_rot = (cos * k) + (self.rotate_half(k) * sin)
+        q_rot = (q * cos) + (self.rotate_half(q) * sin)
+        k_rot = (k * cos) + (self.rotate_half(k) * sin)
         return q_rot, k_rot
 
     def forward(self, x):
@@ -46,6 +46,8 @@ class MultiHeadSelfAttention(nn.Module):
         angles = pos[:, None] * freqs[None, :]
         sin = torch.sin(angles)[None, None, :, :]
         cos = torch.cos(angles)[None, None, :, :]
+        sin = torch.repeat_interleave(sin, 2, dim=-1)
+        cos = torch.repeat_interleave(cos, 2, dim=-1)
 
         qkv = self.qkv(x)
         q, k, v = qkv.chunk(3, dim=-1)
