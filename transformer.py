@@ -79,4 +79,57 @@ class MLP(nn.Module):
         self.act = nn.GELU()
 
     def forward(self, x):
-        return self.fc2(self.act(self.fc1))
+        return self.fc2(self.act(self.fc1(x)))
+    
+class TransformerBlock(nn.Module):
+    def __init__(self, embedding_dim, n_heads):
+        super().__init__()
+
+        assert embedding_dim % n_heads == 0
+
+        self.d_model = embedding_dim
+        self.n_heads = n_heads
+
+        self.ln1 = nn.LayerNorm(embedding_dim)
+        self.attn = MultiHeadSelfAttention(embedding_dim, n_heads)
+        self.ln2 = nn.LayerNorm(embedding_dim)
+        self.mlp = MLP(embedding_dim)
+
+    def forward(self, x):
+        x = x + self.attn(self.ln1(x))
+        x = x + self.mlp(self.ln2(x))
+
+        return x
+    
+class TransformerLM(nn.Module):
+    def __init__(self, context_length, embedding_dim, depth, n_heads, vocab_size):
+        super().__init__()
+
+        assert embedding_dim % n_heads == 0
+
+        self.T = context_length
+        self.dim = embedding_dim
+        self.n_heads = n_heads
+        self.depth = depth
+
+        self.tok_emb = nn.Embedding(vocab_size, embedding_dim)
+
+        self.blocks = nn.ModuleList(
+            [TransformerBlock(embedding_dim, n_heads) for _ in range(depth)]
+        )
+
+        self.ln_f = nn.LayerNorm(embedding_dim)
+        self.lm_head = nn.Linear(embedding_dim, vocab_size)
+
+    def forward(self, x):
+        # get embedding of token
+        x = self.tok_emb(x)
+        # apply [depth] transformer blocks
+        for block in self.blocks:
+            x = block(x)
+        # layer norm
+        x = self.ln_f(x)
+        # decode to vocab size to get logits
+        logits = self.lm_head(x)
+
+        return logits
