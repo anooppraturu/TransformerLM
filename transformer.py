@@ -8,6 +8,9 @@ class MultiHeadSelfAttention(nn.Module):
         # Number of heads divides embedding dimension
         assert embedding_dim % n_heads == 0
 
+        self.log_attention = False
+        self.last_attention = None
+
         self.d_model = embedding_dim
         self.n_heads = n_heads
         head_dim = embedding_dim // n_heads
@@ -45,6 +48,13 @@ class MultiHeadSelfAttention(nn.Module):
         q_rot = (q * cos) + (self.rotate_half(q) * sin)
         k_rot = (k * cos) + (self.rotate_half(k) * sin)
         return q_rot, k_rot
+    
+    def enable_attention_logging(self):
+        self.log_attention = True
+
+    def disable_attention_logging(self):
+        self.log_attention = False
+        self.last_attention = None
 
     def forward(self, x):
         B, T, _ = x.shape
@@ -70,6 +80,9 @@ class MultiHeadSelfAttention(nn.Module):
         scores = scores + mask
         #softmax over key dimension
         attn = torch.softmax(scores, dim=-1)
+
+        if self.log_attention:
+            self.last_attention = attn.detach()
 
         out = torch.einsum('bhqk, bhkd -> bhqd', attn, v)  # B, n_heads, T, d_head
         out = out.transpose(1, 2).contiguous()             # B, T, n_heads, d_head
@@ -123,11 +136,19 @@ class TransformerLM(nn.Module):
         self.tok_emb = nn.Embedding(vocab_size, embedding_dim)
 
         self.blocks = nn.ModuleList(
-            [TransformerBlock(embedding_dim, n_heads, self.context_length) for _ in range(depth)]
+            [TransformerBlock(embedding_dim, n_heads, self.T) for _ in range(depth)]
         )
 
         self.ln_f = nn.LayerNorm(embedding_dim)
         self.lm_head = nn.Linear(embedding_dim, vocab_size)
+
+    def enable_attention_logging(self):
+        for block in self.blocks:
+            block.attn.enable_attention_logging()
+
+    def disable_attention_logging(self):
+        for block in self.blocks:
+            block.attn.disable_attention_logging()
 
     def forward(self, x):
         # get embedding of token
