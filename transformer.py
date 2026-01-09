@@ -3,7 +3,7 @@ from torch import nn
 import math
 
 class MultiHeadSelfAttention(nn.Module):
-    def __init__(self, embedding_dim, n_heads):
+    def __init__(self, embedding_dim, n_heads, max_context_length):
         super().__init__()
         # Number of heads divides embedding dimension
         assert embedding_dim % n_heads == 0
@@ -18,6 +18,24 @@ class MultiHeadSelfAttention(nn.Module):
         self.qkv = nn.Linear(embedding_dim, 3*embedding_dim, bias=False)
         self.WO = nn.Linear(embedding_dim, embedding_dim, bias=False)
 
+        # Buffers for causal masking and RoPE trig functions
+        self.register_buffer(
+            "causal_mask",
+            torch.triu(torch.full((max_context_length, max_context_length), float('-inf')), diagonal=1)
+        )
+
+        pos = torch.arange(max_context_length)
+        freqs = torch.exp(
+            -math.log(10000) * torch.arange(0, self.d_head, 2) / self.d_head
+        )
+        angles = pos[:, None] * freqs[None, :]
+
+        sin = torch.sin(angles)
+        cos = torch.cos(angles)
+
+        self.register_buffer("rope_sin", torch.repeat_interleave(sin, 2, dim=-1))
+        self.register_buffer("rope_cos", torch.repeat_interleave(cos, 2, dim=-1))
+
     def rotate_half(self, x):
         x1 = x[..., ::2]
         x2 = x[..., 1::2]
@@ -30,22 +48,12 @@ class MultiHeadSelfAttention(nn.Module):
 
     def forward(self, x):
         B, T, _ = x.shape
-        # Causal Mask
-        mask = torch.triu(
-            torch.full((T, T), float('-inf'), device=x.device),
-            diagonal=1
-        )
+        assert T <= self.causal_mask.size(0), "Sequence length exceeds model context length"
 
-        # sin and cos for positional encoder
-        pos = torch.arange(T, device=x.device)
-        freqs = torch.exp(
-            -math.log(10000) * torch.arange(0, self.d_head, 2, device=x.device) / self.d_head
-        )
-        angles = pos[:, None] * freqs[None, :]
-        sin = torch.sin(angles)[None, None, :, :]
-        cos = torch.cos(angles)[None, None, :, :]
-        sin = torch.repeat_interleave(sin, 2, dim=-1)
-        cos = torch.repeat_interleave(cos, 2, dim=-1)
+        # Masking and positional encoding variables
+        mask = self.causal_mask[:T, :T]
+        sin = self.rope_sin[:T][None, None, :, :]
+        cos = self.rope_cos[:T][None, None, :, :]
 
         qkv = self.qkv(x)
         q, k, v = qkv.chunk(3, dim=-1)
@@ -82,7 +90,7 @@ class MLP(nn.Module):
         return self.fc2(self.act(self.fc1(x)))
     
 class TransformerBlock(nn.Module):
-    def __init__(self, embedding_dim, n_heads):
+    def __init__(self, embedding_dim, n_heads, context_length):
         super().__init__()
 
         assert embedding_dim % n_heads == 0
@@ -91,7 +99,7 @@ class TransformerBlock(nn.Module):
         self.n_heads = n_heads
 
         self.ln1 = nn.LayerNorm(embedding_dim)
-        self.attn = MultiHeadSelfAttention(embedding_dim, n_heads)
+        self.attn = MultiHeadSelfAttention(embedding_dim, n_heads, context_length)
         self.ln2 = nn.LayerNorm(embedding_dim)
         self.mlp = MLP(embedding_dim)
 
@@ -102,20 +110,20 @@ class TransformerBlock(nn.Module):
         return x
     
 class TransformerLM(nn.Module):
-    def __init__(self, context_length, embedding_dim, depth, n_heads, vocab_size):
+    def __init__(self, embedding_dim, depth, n_heads, vocab_size, context_length):
         super().__init__()
 
         assert embedding_dim % n_heads == 0
 
-        self.T = context_length
         self.dim = embedding_dim
-        self.n_heads = n_heads
         self.depth = depth
+        self.n_heads = n_heads
+        self.T = context_length
 
         self.tok_emb = nn.Embedding(vocab_size, embedding_dim)
 
         self.blocks = nn.ModuleList(
-            [TransformerBlock(embedding_dim, n_heads) for _ in range(depth)]
+            [TransformerBlock(embedding_dim, n_heads, self.context_length) for _ in range(depth)]
         )
 
         self.ln_f = nn.LayerNorm(embedding_dim)
@@ -133,3 +141,22 @@ class TransformerLM(nn.Module):
         logits = self.lm_head(x)
 
         return logits
+    
+    @torch.no_grad()
+    def generate(self, idx, max_new_tokens, temperature = 1.0, do_sample = True):
+        self.eval()
+
+        for _ in range(max_new_tokens):
+            idx_cond = idx[:, -self.T:]  # truncate to context length
+            logits = self(idx_cond)      # (B, T, vocab)
+            logits = logits[:, -1, :] / temperature
+
+            if do_sample:
+                probs = torch.softmax(logits, dim=-1)
+                next_idx = torch.multinomial(probs, num_samples=1)
+            else:
+                next_idx = torch.argmax(logits, dim=-1, keepdim=True)
+
+            idx = torch.cat([idx, next_idx], dim=1)
+
+        return idx
