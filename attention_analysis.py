@@ -59,8 +59,8 @@ def measure_attention_statistics(model, loader, device, num_batches=20):
 def measure_conditional_attention_statistics(model, loader, device, conditional_tokens, num_batches=20):
     """
     Returns per-layer, per-head distributions of
-    attention scale and entropy, splits statistics 
-    based on whether the query token (final position)
+    attention scale and entropy, retaining stats 
+    only if the query token (final position) 
     belongs to conditional_tokens
     """
     model.eval()
@@ -71,11 +71,8 @@ def measure_conditional_attention_statistics(model, loader, device, conditional_
     )
 
     results = {
-        cond: {
-            layer_idx: {"scale": [], "entropy": []}
-            for layer_idx in range(len(model.blocks))
-        }
-        for cond in ['last_in_set', 'last_not_in_set']
+        layer_idx: {"scale": [], "entropy": []}
+        for layer_idx in range(len(model.blocks))
     }
     
     with torch.no_grad():
@@ -95,28 +92,15 @@ def measure_conditional_attention_statistics(model, loader, device, conditional_
 
                 last_token = torch.isin(x[:,-1], conditional_tokens).cpu()
 
-                masks = {
-                    "last_in_set": last_token,
-                    "last_not_in_set": ~last_token,
-                }
-
-                for cond_name, mask in masks.items():
-                    if mask.any():
-                        results[cond_name][layer_idx]["scale"].append(l[mask])
-                        results[cond_name][layer_idx]["entropy"].append(H[mask])
+                results[layer_idx]['scale'].append(l[last_token])
+                results[layer_idx]['entropy'].append(H[last_token])
 
     model.disable_attention_logging()
 
-    for cond in results:
-        for layer_idx in results[cond]:
-            for key in ("scale", "entropy"):
-                if results[cond][layer_idx][key]:
-                    results[cond][layer_idx][key] = torch.cat(
-                        results[cond][layer_idx][key], dim=0
-                    )
-                else:
-                    results[cond][layer_idx][key] = None
-
+    for layer_idx in results:
+        results[layer_idx]["scale"] = torch.cat(results[layer_idx]["scale"], dim=0)
+        results[layer_idx]["entropy"] = torch.cat(results[layer_idx]["entropy"], dim=0)
+        
     return results
 
 def phase_plots(phase_data):
@@ -131,8 +115,8 @@ def phase_plots(phase_data):
     for layer_idx in range(4):
         for head in range(4):
             # get data
-            logl = torch.log(phase_data["last_in_set"][layer_idx]['scale'][:,head])
-            H = phase_data["last_in_set"][layer_idx]['entropy'][:,head]
+            logl = torch.log(1.0 + phase_data[layer_idx]['scale'][:,head])
+            H = phase_data[layer_idx]['entropy'][:,head]
             # head centroids and standard deviations
             mean_scale = logl.mean()
             mean_H = H.mean()
@@ -140,16 +124,16 @@ def phase_plots(phase_data):
             std_H = H.std()
 
             ax[0][layer_idx].scatter(logl, H, c=color[head], alpha=0.5)
-            ax[1][layer_idx].errorbar(mean_scale, mean_H, xerr = std_scale, yerr = std_H, c=color[layer_idx], lw=2.5, capsize=3)
+            ax[1][layer_idx].errorbar(mean_scale, mean_H, xerr = std_scale, yerr = std_H, c=color[head], lw=2.5, capsize=3)
 
         ax[0][layer_idx].set_title('layer {}'.format(layer_idx))
-        ax[0][layer_idx].set_xlabel('ln(<l>)')
+        ax[0][layer_idx].set_xlabel('ln(1 + <l>)')
         ax[0][layer_idx].set_ylabel('H')
         xlims = ax[0][layer_idx].get_xlim()
         ylims = ax[0][layer_idx].get_ylim()
         ax[1][layer_idx].set_xlim(xlims)
         ax[1][layer_idx].set_ylim(ylims)
-        ax[1][layer_idx].set_xlabel('ln(<l>)')
+        ax[1][layer_idx].set_xlabel('ln(1 + <l>)')
         ax[1][layer_idx].set_ylabel('H')
 
     return fig
