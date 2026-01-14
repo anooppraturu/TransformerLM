@@ -1,4 +1,5 @@
 import torch
+import matplotlib.pyplot as plt
 
 def attention_scale(attn):
     """
@@ -118,3 +119,31 @@ def measure_conditional_attention_statistics(model, loader, device, conditional_
 
     return results
 
+def phase_plots(phase_data):
+    """
+    Plot full phase distribution head centroids.
+    Currently assumes depth 4 transformer with 4 heads in each layer.
+    """
+    fig, ax = plt.subplots(2, 4, figsize=(20,10))
+
+    color = ['#66c2a5', '#fc8d62', '#8da0cb', '#e78ac3']
+
+    for layer_idx in range(4):
+        for head in range(4):
+            # get data
+            logl = torch.log(phase_data["last_in_set"][layer_idx]['scale'][:,head])
+            H = phase_data["last_in_set"][layer_idx]['entropy'][:,head]
+            # head centroids and standard deviations
+            mean_scale = logl.mean()
+            mean_H = H.mean()
+            std_scale = logl.std()
+            std_H = H.std()
+
+            ax[0][layer_idx].scatter(logl, H, c=color[head], alpha=0.5)
+            ax[1][layer_idx].errorbar(mean_scale, mean_H, xerr = std_scale, yerr = std_H, c=color[layer_idx], lw=2.5, capsize=3)
+
+        ax[0][layer_idx].set_title('layer {}'.format(layer_idx))
+        ax[0][layer_idx].set_xlabel('ln(<l>)')
+        ax[0][layer_idx].set_ylabel('H')
+
+    return fig
