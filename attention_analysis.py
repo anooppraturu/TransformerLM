@@ -145,5 +145,11 @@ def phase_plots(phase_data):
         ax[0][layer_idx].set_title('layer {}'.format(layer_idx))
         ax[0][layer_idx].set_xlabel('ln(<l>)')
         ax[0][layer_idx].set_ylabel('H')
+        xlims = ax[0][layer_idx].get_xlim()
+        ylims = ax[0][layer_idx].get_ylim()
+        ax[1][layer_idx].set_xlim(xlims)
+        ax[1][layer_idx].set_ylim(ylims)
+        ax[1][layer_idx].set_xlabel('ln(<l>)')
+        ax[1][layer_idx].set_ylabel('H')
 
     return fig
