@@ -56,7 +56,7 @@ def measure_attention_statistics(model, loader, device, num_batches=20):
 
     return results
 
-def measure_conditional_attention_statistics(model, loader, device, conditional_tokens, num_batches=20):
+def measure_conditional_attention_statistics(model, loader, device, conditional_tokens, num_batches=20, previous_tokens = None):
     """
     Returns per-layer, per-head distributions of
     attention scale and entropy, retaining stats 
@@ -66,9 +66,9 @@ def measure_conditional_attention_statistics(model, loader, device, conditional_
     model.eval()
     model.enable_attention_logging()
 
-    conditional_tokens = torch.tensor(
-        conditional_tokens, device=device
-    )
+    conditional_tokens = torch.tensor(conditional_tokens, device=device)
+    if previous_tokens is not None:
+        previous_tokens = torch.tensor(previous_tokens, device=device)
 
     results = {
         layer_idx: {"scale": [], "entropy": []}
@@ -92,8 +92,15 @@ def measure_conditional_attention_statistics(model, loader, device, conditional_
 
                 last_token = torch.isin(x[:,-1], conditional_tokens).cpu()
 
-                results[layer_idx]['scale'].append(l[last_token])
-                results[layer_idx]['entropy'].append(H[last_token])
+                if previous_tokens is not None:
+                    second_last_token = torch.isin(x[:, -2], previous_tokens).cpu()
+                    mask = last_token & second_last_token
+                else:
+                    mask = last_token
+
+                if mask.any():
+                    results[layer_idx]['scale'].append(l[mask])
+                    results[layer_idx]['entropy'].append(H[mask])
 
     model.disable_attention_logging()
 
