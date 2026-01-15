@@ -57,7 +57,7 @@ def measure_attention_statistics(model, loader, device, num_batches=20):
 
     return results
 
-def measure_conditional_attention_statistics(model, loader, device, conditional_tokens, num_batches=20, previous_tokens = None):
+def measure_conditional_attention_statistics(model, loader, device, conditional_tokens, num_samples=500, max_batches = 1000, previous_tokens = None):
     """
     Returns per-layer, per-head distributions of
     attention scale and entropy, retaining stats 
@@ -76,32 +76,42 @@ def measure_conditional_attention_statistics(model, loader, device, conditional_
         for layer_idx in range(len(model.blocks))
     }
     
+    N_samp = 0
     with torch.no_grad():
         for i, (x,_) in enumerate(loader):
-            if i >= num_batches:
+            if i >= max_batches:
+                print("[WARNING]: Exceeded maximum number of batches {} with only {} samples".format(max_batches, N_samp))
                 break
 
             x = x.to(device)
             _ = model(x)
 
+            last_token = torch.isin(x[:,-1], conditional_tokens).cpu()
+            if previous_tokens is not None:
+                second_last_token = torch.isin(x[:, -2], previous_tokens).cpu()
+                mask = last_token & second_last_token
+            else:
+                mask = last_token
+
+            idx = torch.nonzero(mask).squeeze(-1)
+            remaining = num_samples - N_samp
+            idx = idx[:remaining]
+            n_new = idx.numel()
+
             for layer_idx, block in enumerate(model.blocks):
                 attn = block.attn.last_attention    # (B, H, T, T)
                 a = attn[:, :, -1, :]               # last query
 
-                l = attention_scale(a).cpu()
-                H = attention_entropy(a).cpu()
-
-                last_token = torch.isin(x[:,-1], conditional_tokens).cpu()
-
-                if previous_tokens is not None:
-                    second_last_token = torch.isin(x[:, -2], previous_tokens).cpu()
-                    mask = last_token & second_last_token
-                else:
-                    mask = last_token
+                l = attention_scale(a)[idx].cpu()
+                H = attention_entropy(a)[idx].cpu()
 
                 if mask.any():
-                    results[layer_idx]['scale'].append(l[mask])
-                    results[layer_idx]['entropy'].append(H[mask])
+                    results[layer_idx]['scale'].append(l)
+                    results[layer_idx]['entropy'].append(H)
+            
+            N_samp += n_new
+            if N_samp >= num_samples:
+                break
 
     model.disable_attention_logging()
 
@@ -236,3 +246,32 @@ def compute_jsd_matrix(stats_base, stats_rel):
         jsd.append(layer_jsds)
     
     return np.asarray(jsd)
+
+def plot_jsd_heatmap(jsd, title=None, vmax=None):
+    """
+    jsd: array of shape (num_layers, num_heads)
+    """
+    fig, ax = plt.subplots(figsize=(1.2*jsd.shape[1], 1.2*jsd.shape[0]))
+
+    im = ax.imshow(
+        jsd,
+        origin="lower",
+        aspect="auto",
+        cmap="magma",
+        vmax=vmax
+    )
+
+    ax.set_xlabel("Head")
+    ax.set_ylabel("Layer")
+
+    ax.set_xticks(range(jsd.shape[1]))
+    ax.set_yticks(range(jsd.shape[0]))
+
+    if title is not None:
+        ax.set_title(title)
+
+    cbar = fig.colorbar(im, ax=ax)
+    cbar.set_label("Jensen–Shannon Divergence")
+
+    plt.tight_layout()
+    plt.show()
