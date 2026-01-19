@@ -18,108 +18,150 @@ def attention_entropy(attn, eps=1e-9):
     """
     return -(attn * (attn + eps).log()).sum(dim=-1)
 
-def measure_attention_statistics(model, loader, device, num_batches=20):
+
+def collect_conditional_examples(
+    loader,
+    device,
+    conditional_tokens,
+    num_samples=500,
+    max_batches=1000,
+    previous_tokens=None,
+):
     """
-    Returns per-layer, per-head distributions of
-    attention scale and entropy.
+    Select dataset indices satisfying a token-level condition.
+
+    Returns:
+        dict with keys:
+            'indices'     : (N,) dataset indices
+            'last_token'  : (N,) token ids
+            'prev_token'  : (N,) token ids (or None)
     """
-    model.eval()
-    model.enable_attention_logging()
-
-    results = {
-        layer_idx: {'scale': [], 'entropy': []} 
-        for layer_idx in range(len(model.blocks))
-    }
-
-    with torch.no_grad():
-        for i, (x,_) in enumerate(loader):
-            if i >= num_batches:
-                break
-
-            x = x.to(device)
-            _ = model(x)
-
-            for layer_idx, block in enumerate(model.blocks):
-                attn = block.attn.last_attention    # (B, H, T, T)
-                a = attn[:, :, -1, :]               # last query
-
-                l = attention_scale(a).cpu()
-                H = attention_entropy(a).cpu()
-
-                results[layer_idx]['scale'].append(l)
-                results[layer_idx]['entropy'].append(H)
-
-    model.disable_attention_logging()
-
-    for layer_idx in results:
-        results[layer_idx]["scale"] = torch.cat(results[layer_idx]["scale"], dim=0)
-        results[layer_idx]["entropy"] = torch.cat(results[layer_idx]["entropy"], dim=0)
-
-    return results
-
-def measure_conditional_attention_statistics(model, loader, device, conditional_tokens, num_samples=500, max_batches = 1000, previous_tokens = None):
-    """
-    Returns per-layer, per-head distributions of
-    attention scale and entropy, retaining stats 
-    only if the query token (final position) 
-    belongs to conditional_tokens
-    """
-    model.eval()
-    model.enable_attention_logging()
-
     conditional_tokens = torch.tensor(conditional_tokens, device=device)
     if previous_tokens is not None:
         previous_tokens = torch.tensor(previous_tokens, device=device)
+
+    selected_indices = []
+    last_tokens = []
+    prev_tokens = []
+
+    N = 0
+
+    with torch.no_grad():
+        for batch_i, (x, _, idx) in enumerate(loader):
+            if batch_i >= max_batches or N >= num_samples:
+                break
+
+            x = x.to(device)
+            idx = idx.to(device)
+
+            last_ok = torch.isin(x[:, -1], conditional_tokens)
+
+            if previous_tokens is not None:
+                prev_ok = torch.isin(x[:, -2], previous_tokens)
+                mask = last_ok & prev_ok
+            else:
+                mask = last_ok
+
+            idx_sel = torch.nonzero(mask).squeeze(-1)
+            remaining = num_samples - N
+            idx_sel = idx_sel[:remaining]
+
+            if idx_sel.numel() == 0:
+                continue
+
+            selected_indices.append(idx[idx_sel].cpu())
+            last_tokens.append(x[idx_sel, -1].cpu())
+            prev_tokens.append(x[idx_sel, -2].cpu())
+
+            N += idx_sel.numel()
+
+    return {
+        "indices": torch.cat(selected_indices),
+        "last_token": torch.cat(last_tokens),
+        "prev_token": torch.cat(prev_tokens),
+    }
+
+def measure_attention_on_examples(
+    model,
+    loader,
+    device,
+    example_indices,
+):
+    """
+    Measure attention statistics on a fixed set of dataset indices.
+
+    Returns:
+        dict[layer_idx] -> {
+            'scale': (N, H),
+            'entropy': (N, H)
+        }
+    """
+    model.eval()
+    model.enable_attention_logging()
 
     results = {
         layer_idx: {"scale": [], "entropy": []}
         for layer_idx in range(len(model.blocks))
     }
-    
-    N_samp = 0
+
     with torch.no_grad():
-        for i, (x,_) in enumerate(loader):
-            if i >= max_batches:
-                print("[WARNING]: Exceeded maximum number of batches {} with only {} samples".format(max_batches, N_samp))
-                break
+        for x, _, idx in loader:
+            idx = idx.cpu()
+            mask = torch.isin(idx, example_indices)
+
+            if not mask.any():
+                continue
 
             x = x.to(device)
             _ = model(x)
 
-            last_token = torch.isin(x[:,-1], conditional_tokens).cpu()
-            if previous_tokens is not None:
-                second_last_token = torch.isin(x[:, -2], previous_tokens).cpu()
-                mask = last_token & second_last_token
-            else:
-                mask = last_token
-
-            idx = torch.nonzero(mask).squeeze(-1)
-            remaining = num_samples - N_samp
-            idx = idx[:remaining]
-            n_new = idx.numel()
+            sel = torch.nonzero(mask).squeeze(-1)
 
             for layer_idx, block in enumerate(model.blocks):
-                attn = block.attn.last_attention    # (B, H, T, T)
-                a = attn[:, :, -1, :]               # last query
+                attn = block.attn.last_attention      # (B, H, T, T)
+                a = attn[:, :, -1, :]                 # last query
 
-                l = attention_scale(a)[idx].cpu()
-                H = attention_entropy(a)[idx].cpu()
+                l = attention_scale(a)[sel].cpu()
+                H = attention_entropy(a)[sel].cpu()
 
-                if mask.any():
-                    results[layer_idx]['scale'].append(l)
-                    results[layer_idx]['entropy'].append(H)
-            
-            N_samp += n_new
-            if N_samp >= num_samples:
-                break
+                results[layer_idx]["scale"].append(l)
+                results[layer_idx]["entropy"].append(H)
 
     model.disable_attention_logging()
 
     for layer_idx in results:
         results[layer_idx]["scale"] = torch.cat(results[layer_idx]["scale"], dim=0)
         results[layer_idx]["entropy"] = torch.cat(results[layer_idx]["entropy"], dim=0)
-        
+
     return results
+
+def measure_conditional_attention_statistics(
+    model,
+    loader,
+    device,
+    conditional_tokens,
+    num_samples=500,
+    max_batches=1000,
+    previous_tokens=None,
+):
+    examples = collect_conditional_examples(
+        loader=loader,
+        device=device,
+        conditional_tokens=conditional_tokens,
+        num_samples=num_samples,
+        max_batches=max_batches,
+        previous_tokens=previous_tokens,
+    )
+
+    stats = measure_attention_on_examples(
+        model=model,
+        loader=loader,
+        device=device,
+        example_indices=examples["indices"],
+    )
+
+    return stats, examples
+
 
 def phase_plots(phase_data):
     """
